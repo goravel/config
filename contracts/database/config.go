@@ -13,6 +13,13 @@ func (d Driver) String() string {
 	return string(d)
 }
 
+// TODO Rename to Config
+type Config1 struct {
+	Connection string
+	Driver     string
+	Prefix     string
+}
+
 // Config Used in config/database.go
 type Config struct {
 	Dsn      string
