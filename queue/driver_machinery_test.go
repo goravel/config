@@ -1,3 +1,5 @@
+// TODO: Will be removed in v1.17
+
 package queue
 
 import (
@@ -12,35 +14,33 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/goravel/framework/contracts/queue"
-	configmock "github.com/goravel/framework/mocks/config"
-	logmock "github.com/goravel/framework/mocks/log"
+	mocksconfig "github.com/goravel/framework/mocks/config"
+	mockslog "github.com/goravel/framework/mocks/log"
 	"github.com/goravel/framework/support/carbon"
 	testingdocker "github.com/goravel/framework/support/docker"
 	"github.com/goravel/framework/support/env"
 )
 
 var (
-	testSyncJob                = 0
-	testAsyncJob               = 0
-	testAsyncJobOfDisableDebug = 0
-	testDelayAsyncJob          = 0
-	testCustomAsyncJob         = 0
-	testErrorAsyncJob          = 0
-	testChainAsyncJob          = 0
-	testChainSyncJob           = 0
-	testChainAsyncJobError     = 0
-	testChainSyncJobError      = 0
+	testMachineryJob               = 0
+	testMachineryJobOfDisableDebug = 0
+	testDelayMachineryJob          = 0
+	testCustomMachineryJob         = 0
+	testErrorMachineryJob          = 0
+	testChainMachineryJob          = 0
+	testChainMachineryJobError     = 0
 )
 
-type QueueTestSuite struct {
+type MachineryTestSuite struct {
 	suite.Suite
 	app        *Application
-	mockConfig *configmock.Config
-	mockLog    *logmock.Log
+	mockConfig *mocksconfig.Config
+	mockLog    *mockslog.Log
+	machinery  *Machinery
 	port       int
 }
 
-func TestQueueTestSuite(t *testing.T) {
+func TestMachineryTestSuite(t *testing.T) {
 	if env.IsWindows() {
 		t.Skip("Skip test that using Docker")
 	}
@@ -48,34 +48,61 @@ func TestQueueTestSuite(t *testing.T) {
 	redisDocker := testingdocker.NewRedis()
 	assert.Nil(t, redisDocker.Build())
 
-	suite.Run(t, &QueueTestSuite{
+	suite.Run(t, &MachineryTestSuite{
 		port: redisDocker.Config().Port,
 	})
 
 	assert.Nil(t, redisDocker.Shutdown())
 }
 
-func (s *QueueTestSuite) SetupTest() {
-	s.mockConfig = &configmock.Config{}
-	s.mockLog = &logmock.Log{}
-	s.app = NewApplication(s.mockConfig, s.mockLog)
+func (s *MachineryTestSuite) SetupTest() {
+	s.mockConfig = mocksconfig.NewConfig(s.T())
+	s.mockLog = mockslog.NewLog(s.T())
+	s.app = NewApplication(s.mockConfig)
 }
 
-func (s *QueueTestSuite) TestSyncQueue() {
-	s.mockConfig.On("GetString", "queue.default").Return("redis").Once()
-	s.Nil(s.app.Job(&TestSyncJob{}, []queue.Arg{
-		{Type: "string", Value: "TestSyncQueue"},
-		{Type: "int", Value: 1},
-	}).DispatchSync())
-	s.Equal(1, testSyncJob)
+func (s *MachineryTestSuite) TestServer() {
+	tests := []struct {
+		name         string
+		connection   string
+		queue        string
+		setup        func()
+		expectServer bool
+		expectErr    bool
+	}{
+		{
+			name:       "redis",
+			connection: "redis",
+			setup: func() {
+				s.mockConfig.On("GetString", "queue.connections.redis.connection").Return("default").Once()
+				s.mockConfig.On("GetString", "database.redis.default.host").Return("127.0.0.1").Once()
+				s.mockConfig.On("GetString", "database.redis.default.password").Return("").Once()
+				s.mockConfig.On("GetInt", "database.redis.default.port").Return(6379).Once()
+				s.mockConfig.On("GetInt", "database.redis.default.database").Return(0).Once()
+				s.mockConfig.On("GetString", "queue.connections.redis.queue", "default").Return("default").Once()
+				s.mockConfig.On("GetString", "app.name").Return("goravel").Once()
+				s.mockConfig.On("GetBool", "app.debug").Return(true).Once()
+			},
+			expectServer: true,
+		},
+	}
+
+	for _, test := range tests {
+		s.Run(test.name, func() {
+			s.machinery = NewMachinery(test.connection, NewConfig(s.mockConfig), s.mockLog)
+			test.setup()
+			server := s.machinery.server(test.queue)
+			s.Equal(test.expectServer, server != nil)
+		})
+	}
 }
 
-func (s *QueueTestSuite) TestDefaultAsyncQueue_EnableDebug() {
+func (s *MachineryTestSuite) TestDefaultAsyncQueue_EnableDebug() {
 	s.mockConfig.On("GetString", "queue.default").Return("redis").Twice()
 	s.mockConfig.On("GetString", "app.name").Return("goravel").Times(4)
 	s.mockConfig.On("GetBool", "app.debug").Return(true).Times(2)
 	s.mockConfig.On("GetString", "queue.connections.redis.queue", "default").Return("default").Times(2)
-	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("redis").Times(3)
+	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("machinery").Times(3)
 	s.mockConfig.On("GetString", "queue.connections.redis.connection").Return("default").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.host").Return("localhost").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.password").Return("").Twice()
@@ -88,7 +115,7 @@ func (s *QueueTestSuite) TestDefaultAsyncQueue_EnableDebug() {
 	s.mockLog.On("Info", "[*] Waiting for messages. To exit press CTRL+C").Once()
 	s.mockLog.On("Debugf", "Received new message: %s", mock.Anything).Once()
 	s.mockLog.On("Debugf", "Processed task %s. Results = %s", mock.Anything, mock.Anything).Once()
-	s.app.jobs = []queue.Job{&TestAsyncJob{}}
+	s.app.Register([]queue.Job{&TestMachineryJob{}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -102,29 +129,29 @@ func (s *QueueTestSuite) TestDefaultAsyncQueue_EnableDebug() {
 		}
 	}(ctx)
 	time.Sleep(2 * time.Second)
-	s.Nil(s.app.Job(&TestAsyncJob{}, []queue.Arg{
-		{Type: "string", Value: "TestDefaultAsyncQueue_EnableDebug"},
-		{Type: "int", Value: 1},
+	s.Nil(s.app.Job(&TestMachineryJob{}, []any{
+		"TestDefaultAsyncQueue_EnableDebug",
+		1,
 	}).OnQueue("debug").Dispatch())
 	time.Sleep(2 * time.Second)
-	s.Equal(1, testAsyncJob)
+	s.Equal(1, testMachineryJob)
 
 	s.mockConfig.AssertExpectations(s.T())
 	s.mockLog.AssertExpectations(s.T())
 }
 
-func (s *QueueTestSuite) TestDefaultAsyncQueue_DisableDebug() {
+func (s *MachineryTestSuite) TestDefaultAsyncQueue_DisableDebug() {
 	s.mockConfig.On("GetString", "queue.default").Return("redis").Twice()
 	s.mockConfig.On("GetString", "app.name").Return("goravel").Times(3)
 	s.mockConfig.On("GetBool", "app.debug").Return(false).Times(2)
 	s.mockConfig.On("GetString", "queue.connections.redis.queue", "default").Return("default").Times(3)
-	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("redis").Times(3)
+	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("machinery").Times(3)
 	s.mockConfig.On("GetString", "queue.connections.redis.connection").Return("default").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.host").Return("localhost").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.password").Return("").Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.port").Return(s.port).Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.database").Return(0).Twice()
-	s.app.jobs = []queue.Job{&TestAsyncJobOfDisableDebug{}}
+	s.app.Register([]queue.Job{&TestMachineryJobOfDisableDebug{}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -136,29 +163,29 @@ func (s *QueueTestSuite) TestDefaultAsyncQueue_DisableDebug() {
 		}
 	}(ctx)
 	time.Sleep(2 * time.Second)
-	s.Nil(s.app.Job(&TestAsyncJobOfDisableDebug{}, []queue.Arg{
-		{Type: "string", Value: "TestDefaultAsyncQueue_DisableDebug"},
-		{Type: "int", Value: 1},
+	s.Nil(s.app.Job(&TestMachineryJobOfDisableDebug{}, []any{
+		"TestDefaultAsyncQueue_DisableDebug",
+		1,
 	}).Dispatch())
 	time.Sleep(2 * time.Second)
-	s.Equal(1, testAsyncJobOfDisableDebug)
+	s.Equal(1, testMachineryJobOfDisableDebug)
 
 	s.mockConfig.AssertExpectations(s.T())
 	s.mockLog.AssertExpectations(s.T())
 }
 
-func (s *QueueTestSuite) TestDelayAsyncQueue() {
+func (s *MachineryTestSuite) TestDelayAsyncQueue() {
 	s.mockConfig.On("GetString", "queue.default").Return("redis").Times(2)
 	s.mockConfig.On("GetString", "app.name").Return("goravel").Times(4)
 	s.mockConfig.On("GetBool", "app.debug").Return(false).Times(2)
 	s.mockConfig.On("GetString", "queue.connections.redis.queue", "default").Return("default").Twice()
-	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("redis").Times(3)
+	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("machinery").Times(3)
 	s.mockConfig.On("GetString", "queue.connections.redis.connection").Return("default").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.host").Return("localhost").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.password").Return("").Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.port").Return(s.port).Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.database").Return(0).Twice()
-	s.app.jobs = []queue.Job{&TestDelayAsyncJob{}}
+	s.app.Register([]queue.Job{&TestDelayMachineryJob{}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -172,19 +199,19 @@ func (s *QueueTestSuite) TestDelayAsyncQueue() {
 		}
 	}(ctx)
 	time.Sleep(2 * time.Second)
-	s.Nil(s.app.Job(&TestDelayAsyncJob{}, []queue.Arg{
-		{Type: "string", Value: "TestDelayAsyncQueue"},
-		{Type: "int", Value: 1},
+	s.Nil(s.app.Job(&TestDelayMachineryJob{}, []any{
+		"TestDelayAsyncQueue",
+		1,
 	}).OnQueue("delay").Delay(carbon.Now().AddSeconds(3).StdTime()).Dispatch())
 	time.Sleep(2 * time.Second)
-	s.Equal(0, testDelayAsyncJob)
+	s.Equal(0, testDelayMachineryJob)
 	time.Sleep(3 * time.Second)
-	s.Equal(1, testDelayAsyncJob)
+	s.Equal(1, testDelayMachineryJob)
 
 	s.mockConfig.AssertExpectations(s.T())
 }
 
-func (s *QueueTestSuite) TestCustomAsyncQueue() {
+func (s *MachineryTestSuite) TestCustomAsyncQueue() {
 	s.mockConfig.On("GetString", "queue.default").Return("redis").Twice()
 	s.mockConfig.On("GetString", "app.name").Return("goravel").Times(4)
 	s.mockConfig.On("GetBool", "app.debug").Return(false).Times(2)
@@ -195,7 +222,7 @@ func (s *QueueTestSuite) TestCustomAsyncQueue() {
 	s.mockConfig.On("GetString", "database.redis.default.password").Return("").Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.port").Return(s.port).Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.database").Return(0).Twice()
-	s.app.jobs = []queue.Job{&TestCustomAsyncJob{}}
+	s.app.Register([]queue.Job{&TestCustomMachineryJob{}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -211,28 +238,28 @@ func (s *QueueTestSuite) TestCustomAsyncQueue() {
 		}
 	}(ctx)
 	time.Sleep(2 * time.Second)
-	s.Nil(s.app.Job(&TestCustomAsyncJob{}, []queue.Arg{
-		{Type: "string", Value: "TestCustomAsyncQueue"},
-		{Type: "int", Value: 1},
+	s.Nil(s.app.Job(&TestCustomMachineryJob{}, []any{
+		"TestCustomAsyncQueue",
+		1,
 	}).OnConnection("custom").OnQueue("custom1").Dispatch())
 	time.Sleep(2 * time.Second)
-	s.Equal(1, testCustomAsyncJob)
+	s.Equal(1, testCustomMachineryJob)
 
 	s.mockConfig.AssertExpectations(s.T())
 }
 
-func (s *QueueTestSuite) TestErrorAsyncQueue() {
+func (s *MachineryTestSuite) TestErrorAsyncQueue() {
 	s.mockConfig.On("GetString", "queue.default").Return("redis").Twice()
 	s.mockConfig.On("GetString", "app.name").Return("goravel").Times(4)
 	s.mockConfig.On("GetBool", "app.debug").Return(false).Times(2)
 	s.mockConfig.On("GetString", "queue.connections.redis.queue", "default").Return("default").Twice()
-	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("redis").Times(3)
+	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("machinery").Times(3)
 	s.mockConfig.On("GetString", "queue.connections.redis.connection").Return("default").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.host").Return("localhost").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.password").Return("").Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.port").Return(s.port).Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.database").Return(0).Twice()
-	s.app.jobs = []queue.Job{&TestErrorAsyncJob{}}
+	s.app.Register([]queue.Job{&TestErrorMachineryJob{}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -246,28 +273,28 @@ func (s *QueueTestSuite) TestErrorAsyncQueue() {
 		}
 	}(ctx)
 	time.Sleep(2 * time.Second)
-	s.Nil(s.app.Job(&TestErrorAsyncJob{}, []queue.Arg{
-		{Type: "string", Value: "TestErrorAsyncQueue"},
-		{Type: "int", Value: 1},
+	s.Nil(s.app.Job(&TestErrorMachineryJob{}, []any{
+		"TestErrorAsyncQueue",
+		1,
 	}).OnConnection("redis").OnQueue("error1").Dispatch())
 	time.Sleep(2 * time.Second)
-	s.Equal(0, testErrorAsyncJob)
+	s.Equal(0, testErrorMachineryJob)
 
 	s.mockConfig.AssertExpectations(s.T())
 }
 
-func (s *QueueTestSuite) TestChainAsyncQueue() {
+func (s *MachineryTestSuite) TestChainAsyncQueue() {
 	s.mockConfig.On("GetString", "queue.default").Return("redis").Times(2)
 	s.mockConfig.On("GetString", "app.name").Return("goravel").Times(4)
 	s.mockConfig.On("GetBool", "app.debug").Return(false).Times(2)
 	s.mockConfig.On("GetString", "queue.connections.redis.queue", "default").Return("default").Twice()
-	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("redis").Times(3)
+	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("machinery").Times(3)
 	s.mockConfig.On("GetString", "queue.connections.redis.connection").Return("default").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.host").Return("localhost").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.password").Return("").Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.port").Return(s.port).Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.database").Return(0).Twice()
-	s.app.jobs = []queue.Job{&TestChainAsyncJob{}, &TestChainSyncJob{}}
+	s.app.Register([]queue.Job{&TestChainMachineryJob{}, &TestChainSyncJob{}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -284,41 +311,41 @@ func (s *QueueTestSuite) TestChainAsyncQueue() {
 	time.Sleep(2 * time.Second)
 	s.Nil(s.app.Chain([]queue.Jobs{
 		{
-			Job: &TestChainAsyncJob{},
-			Args: []queue.Arg{
-				{Type: "string", Value: "TestChainAsyncQueue"},
-				{Type: "int", Value: 1},
+			Job: &TestChainMachineryJob{},
+			Args: []any{
+				"TestChainAsyncQueue",
+				1,
 			},
 		},
 		{
 			Job: &TestChainSyncJob{},
-			Args: []queue.Arg{
-				{Type: "string", Value: "TestChainSyncQueue"},
-				{Type: "int", Value: 1},
+			Args: []any{
+				"TestChainSyncQueue",
+				1,
 			},
 		},
 	}).OnQueue("chain").Dispatch())
 
 	time.Sleep(2 * time.Second)
-	s.Equal(1, testChainAsyncJob)
+	s.Equal(1, testChainMachineryJob)
 	s.Equal(1, testChainSyncJob)
 
 	s.mockConfig.AssertExpectations(s.T())
 }
 
-func (s *QueueTestSuite) TestChainAsyncQueue_Error() {
+func (s *MachineryTestSuite) TestChainAsyncQueue_Error() {
 	s.mockConfig.On("GetString", "queue.default").Return("redis").Times(2)
 	s.mockConfig.On("GetString", "app.name").Return("goravel").Times(4)
 	s.mockConfig.On("GetBool", "app.debug").Return(false).Times(2)
 	s.mockConfig.On("GetString", "queue.connections.redis.queue", "default").Return("default").Twice()
-	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("redis").Times(3)
+	s.mockConfig.On("GetString", "queue.connections.redis.driver").Return("machinery").Times(3)
 	s.mockConfig.On("GetString", "queue.connections.redis.connection").Return("default").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.host").Return("localhost").Twice()
 	s.mockConfig.On("GetString", "database.redis.default.password").Return("").Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.port").Return(s.port).Twice()
 	s.mockConfig.On("GetInt", "database.redis.default.database").Return(0).Twice()
 	s.mockLog.On("Errorf", "Failed processing task %s. Error = %v", mock.Anything, errors.New("error")).Once()
-	s.app.jobs = []queue.Job{&TestChainAsyncJob{}, &TestChainSyncJob{}}
+	s.app.Register([]queue.Job{&TestChainMachineryJob{}, &TestChainSyncJob{}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -335,147 +362,115 @@ func (s *QueueTestSuite) TestChainAsyncQueue_Error() {
 	time.Sleep(2 * time.Second)
 	s.Nil(s.app.Chain([]queue.Jobs{
 		{
-			Job: &TestChainAsyncJob{},
-			Args: []queue.Arg{
-				{Type: "bool", Value: true},
-			},
+			Job:  &TestChainMachineryJob{},
+			Args: []any{true},
 		},
 		{
 			Job:  &TestChainSyncJob{},
-			Args: []queue.Arg{},
+			Args: []any{},
 		},
 	}).OnQueue("chain").Dispatch())
 
 	time.Sleep(2 * time.Second)
-	s.Equal(1, testChainAsyncJobError)
-	s.Equal(0, testChainSyncJobError)
+	s.Equal(1, testChainMachineryJobError)
+	s.Equal(0, testChainSyncJob)
 
 	s.mockConfig.AssertExpectations(s.T())
 	s.mockLog.AssertExpectations(s.T())
 }
 
-type TestAsyncJob struct {
+type TestMachineryJob struct {
 }
 
 // Signature The name and signature of the job.
-func (receiver *TestAsyncJob) Signature() string {
+func (receiver *TestMachineryJob) Signature() string {
 	return "test_async_job"
 }
 
 // Handle Execute the job.
-func (receiver *TestAsyncJob) Handle(args ...any) error {
-	testAsyncJob++
+func (receiver *TestMachineryJob) Handle(args ...any) error {
+	testMachineryJob++
 
 	return nil
 }
 
-type TestAsyncJobOfDisableDebug struct {
+type TestMachineryJobOfDisableDebug struct {
 }
 
 // Signature The name and signature of the job.
-func (receiver *TestAsyncJobOfDisableDebug) Signature() string {
+func (receiver *TestMachineryJobOfDisableDebug) Signature() string {
 	return "test_async_job_of_disable_debug"
 }
 
 // Handle Execute the job.
-func (receiver *TestAsyncJobOfDisableDebug) Handle(args ...any) error {
-	testAsyncJobOfDisableDebug++
+func (receiver *TestMachineryJobOfDisableDebug) Handle(args ...any) error {
+	testMachineryJobOfDisableDebug++
 
 	return nil
 }
 
-type TestDelayAsyncJob struct {
+type TestDelayMachineryJob struct {
 }
 
 // Signature The name and signature of the job.
-func (receiver *TestDelayAsyncJob) Signature() string {
+func (receiver *TestDelayMachineryJob) Signature() string {
 	return "test_delay_async_job"
 }
 
 // Handle Execute the job.
-func (receiver *TestDelayAsyncJob) Handle(args ...any) error {
-	testDelayAsyncJob++
+func (receiver *TestDelayMachineryJob) Handle(args ...any) error {
+	testDelayMachineryJob++
 
 	return nil
 }
 
-type TestSyncJob struct {
+type TestCustomMachineryJob struct {
 }
 
 // Signature The name and signature of the job.
-func (receiver *TestSyncJob) Signature() string {
-	return "test_sync_job"
-}
-
-// Handle Execute the job.
-func (receiver *TestSyncJob) Handle(args ...any) error {
-	testSyncJob++
-
-	return nil
-}
-
-type TestCustomAsyncJob struct {
-}
-
-// Signature The name and signature of the job.
-func (receiver *TestCustomAsyncJob) Signature() string {
+func (receiver *TestCustomMachineryJob) Signature() string {
 	return "test_async_job"
 }
 
 // Handle Execute the job.
-func (receiver *TestCustomAsyncJob) Handle(args ...any) error {
-	testCustomAsyncJob++
+func (receiver *TestCustomMachineryJob) Handle(args ...any) error {
+	testCustomMachineryJob++
 
 	return nil
 }
 
-type TestErrorAsyncJob struct {
+type TestErrorMachineryJob struct {
 }
 
 // Signature The name and signature of the job.
-func (receiver *TestErrorAsyncJob) Signature() string {
+func (receiver *TestErrorMachineryJob) Signature() string {
 	return "test_async_job"
 }
 
 // Handle Execute the job.
-func (receiver *TestErrorAsyncJob) Handle(args ...any) error {
-	testErrorAsyncJob++
+func (receiver *TestErrorMachineryJob) Handle(args ...any) error {
+	testErrorMachineryJob++
 
 	return nil
 }
 
-type TestChainAsyncJob struct {
+type TestChainMachineryJob struct {
 }
 
 // Signature The name and signature of the job.
-func (receiver *TestChainAsyncJob) Signature() string {
+func (receiver *TestChainMachineryJob) Signature() string {
 	return "test_async_job"
 }
 
 // Handle Execute the job.
-func (receiver *TestChainAsyncJob) Handle(args ...any) error {
+func (receiver *TestChainMachineryJob) Handle(args ...any) error {
 	if len(args) > 0 && cast.ToBool(args[0]) {
-		testChainAsyncJobError++
+		testChainMachineryJobError++
 
 		return errors.New("error")
 	}
 
-	testChainAsyncJob++
-
-	return nil
-}
-
-type TestChainSyncJob struct {
-}
-
-// Signature The name and signature of the job.
-func (receiver *TestChainSyncJob) Signature() string {
-	return "test_sync_job"
-}
-
-// Handle Execute the job.
-func (receiver *TestChainSyncJob) Handle(args ...any) error {
-	testChainSyncJob++
+	testChainMachineryJob++
 
 	return nil
 }
